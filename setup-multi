@@ -109,6 +109,24 @@ check_dependencies() {
 
 # Create useful aliases - removed for sharing
 
+# Install scripts to ~/.local/bin
+install_scripts() {
+    log_info "Installing scripts to ~/.local/bin..."
+    
+    # Create ~/.local/bin if it doesn't exist
+    mkdir -p "$HOME/.local/bin"
+    
+    # Copy multi script
+    if [[ -f "$SCRIPT_DIR/multi" ]]; then
+        cp "$SCRIPT_DIR/multi" "$HOME/.local/bin/multi"
+        chmod +x "$HOME/.local/bin/multi"
+        log_success "Installed multi to ~/.local/bin/multi"
+    else
+        log_error "multi script not found in $SCRIPT_DIR"
+        return 1
+    fi
+}
+
 # Test the installation
 test_installation() {
     log_info "Testing installation..."
@@ -167,6 +185,11 @@ main() {
     # Setup PATH
     if ! check_path; then
         setup_path
+    fi
+    
+    # Install scripts to ~/.local/bin
+    if ! install_scripts; then
+        exit 1
     fi
     
     # Setup aliases - removed for sharing

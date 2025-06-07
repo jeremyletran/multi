@@ -62,8 +62,8 @@ Detects and suggests commands for:
 1. **Clone and make executable:**
 
 ```bash
-git clone git@github.com:jeremyletran/multi.git ~/.local/bin/multi
-cd ~/.local/bin/multi
+git clone git@github.com:jeremyletran/multi-dev.git ~/.local/bin/multi-dev
+cd ~/.local/bin/multi-dev
 chmod +x multi setup-multi
 ```
 
@@ -76,6 +76,7 @@ chmod +x multi setup-multi
 This will:
 
 - Check dependencies (tmux, git)
+- Install the `multi` script to ~/.local/bin
 - Add ~/.local/bin to your PATH
 - Test the installation
 
@@ -170,6 +171,7 @@ your-project/
 
 **Command not found:**
 
+- Run the setup script: `./setup-multi`
 - Make sure ~/.local/bin is in your PATH
 - Run `source ~/.zshrc` or restart terminal
 
