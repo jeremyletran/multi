@@ -374,6 +374,50 @@ detect_dev_commands() {
     echo "${commands[@]}"
 }
 
+# Setup custom tmux status bar for development
+setup_tmux_status_bar() {
+    local session_name="$1"
+    local branch="$2"
+    
+    # Colors
+    local bg_color="#2e3440"      # Dark gray background
+    local accent_color="#88c0d0"  # Light blue accent
+    local branch_color="#a3be8c"  # Green for branch
+    local repo_color="#ebcb8b"    # Yellow for repo
+    local text_color="#eceff4"    # Light text
+    
+    # Left side: Repository and Branch info
+    local left_format="#{?client_prefix,#[bg=#bf616a],#[bg=$bg_color]}#[fg=$text_color] "
+    left_format+="#[fg=$repo_color,bold]$REPO_NAME#[fg=$text_color] → "
+    left_format+="#[fg=$branch_color,bold]$branch#[fg=$text_color] "
+    
+    # Right side: Switch shortcut help
+    local right_format="#[fg=$text_color,bg=$bg_color] Switch: "
+    right_format+="#[fg=$accent_color,bold]Ctrl+b s #[fg=$text_color]"
+    
+    # Window format: show active window clearly
+    local window_format="#[fg=$text_color,bg=$bg_color]#{?window_activity_flag,#[fg=#bf616a],}"
+    window_format+="#{?window_bell_flag,#[fg=#bf616a],}"
+    window_format+="#{?window_active,#[fg=$accent_color,bg=#434c5e],#[fg=#8a8a8a]} "
+    window_format+="#{window_index}:#{window_name} "
+    
+    # Apply the custom status bar to this session
+    tmux set-option -t "$session_name" status-left "$left_format"
+    tmux set-option -t "$session_name" status-right "$right_format"
+    tmux set-option -t "$session_name" window-status-format "$window_format"
+    tmux set-option -t "$session_name" window-status-current-format "#[fg=$accent_color,bg=#434c5e,bold] #{window_index}:#{window_name} "
+    
+    # Status bar appearance
+    tmux set-option -t "$session_name" status-bg "$bg_color"
+    tmux set-option -t "$session_name" status-fg "$text_color"
+    tmux set-option -t "$session_name" status-left-length 50
+    tmux set-option -t "$session_name" status-right-length 20
+    tmux set-option -t "$session_name" status-interval 1
+    
+    # Show prefix key indicator
+    tmux set-option -t "$session_name" status-left-style "#{?client_prefix,bg=#bf616a,bg=$bg_color}"
+}
+
 # Create tmux session
 create_tmux_session() {
     local branch="$1"
@@ -389,6 +433,9 @@ create_tmux_session() {
     
     # Create new tmux session in detached mode
     tmux new-session -d -s "$session_name" -c "$worktree_path"
+    
+    # Customize status bar for this session
+    setup_tmux_status_bar "$session_name" "$branch"
     
     # Window 0: Terminal with easy cursor launch
     tmux rename-window -t "$session_name:0" "main"
@@ -458,20 +505,21 @@ start_env() {
 switch_env() {
     local branch="$1"
     
+    check_git_repo
+    
+    # If no branch specified, show interactive menu
     if [[ -z "$branch" ]]; then
-        log_error "Branch name is required"
-        show_usage
-        exit 1
+        show_switch_menu
+        return
     fi
     
-    check_git_repo
     local session_name="$(get_session_name "$branch")"
     
     if ! session_exists "$session_name"; then
         log_error "No development environment found for branch: $branch"
         log_info "Create one first with: multi start $branch"
         echo ""
-        log_info "Tip: Use 'multi list' to see all available environments"
+        log_info "Tip: Use 'multi switch' (no branch) to see available environments"
         exit 1
     fi
     
@@ -483,6 +531,59 @@ switch_env() {
     else
         # If we're not in tmux, attach to the session
         tmux attach -t "$session_name"
+    fi
+}
+
+# Show interactive menu for switching environments
+show_switch_menu() {
+    echo "Available Development Environments:"
+    echo "=================================="
+    
+    local sessions=()
+    local count=0
+    
+    # Get all tmux sessions for this repo
+    if tmux list-sessions 2>/dev/null | grep -q "^${SESSION_PREFIX}-"; then
+        while IFS= read -r line; do
+            local session_name=$(echo "$line" | cut -d: -f1)
+            local branch=${session_name#"$SESSION_PREFIX"-}
+            # Convert dashes back to slashes for display
+            branch=${branch//-/\/}
+            local status=$(echo "$line" | grep -o "(attached)" || echo "(detached)")
+            
+            count=$((count + 1))
+            sessions+=("$branch")
+            
+            if [[ "$status" == "(attached)" ]]; then
+                echo "  $count) $branch ${GREEN}● active${NC}"
+            else
+                echo "  $count) $branch"
+            fi
+        done < <(tmux list-sessions 2>/dev/null | grep "^${SESSION_PREFIX}-")
+    fi
+    
+    if [[ $count -eq 0 ]]; then
+        echo "No development environments found."
+        echo ""
+        echo "Create one with: multi start <branch-name>"
+        return 1
+    fi
+    
+    echo ""
+    echo -n "Select environment (1-$count, or Enter to cancel): "
+    read -r choice
+    
+    if [[ -z "$choice" ]]; then
+        echo "Cancelled."
+        return 0
+    fi
+    
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le $count ]]; then
+        local selected_branch="${sessions[$((choice-1))]}"
+        switch_env "$selected_branch"
+    else
+        log_error "Invalid selection: $choice"
+        return 1
     fi
 }
 
@@ -788,7 +889,7 @@ show_usage() {
     echo ""
     echo "Commands:"
     echo "  start <branch>     Create and start development environment for branch (auto-switches)"
-    echo "  switch <branch>    Switch to existing development environment"
+    echo "  switch [branch]    Switch to development environment (interactive menu if no branch)"
     echo "  stop <branch>      Stop tmux session for branch"
     echo "  cleanup <branch>   Clean up development environment (stop + remove worktree)"
     echo "  cleanup-all        Clean up all development environments for current repo"
@@ -799,18 +900,25 @@ show_usage() {
     echo "  --force            Force operations (for cleanup commands)"
     echo ""
     echo "Examples:"
-    echo "  multi start feature/new-dashboard"
-    echo "  multi switch main"
-    echo "  multi cleanup feature/old-feature --force"
-    echo "  multi list"
+    echo "  multi start feature/new-dashboard    # Create and auto-switch to environment"
+    echo "  multi switch                         # Show interactive menu to pick environment"
+    echo "  multi switch main                    # Switch directly to main branch environment"
+    echo "  multi cleanup feature/old-feature    # Clean up when done"
+    echo "  multi list                           # See all environments"
     echo ""
     echo "The tool will automatically:"
     echo "  • Create git worktrees in .dev-worktrees/ (branched from main)"
     echo "  • Set up tmux sessions with main, dev, and git windows"
+    echo "  • Configure custom status bar showing repo → branch info"
     echo "  • Switch to the new session immediately"
     echo "  • Provide easy commands to launch Cursor or Claude Code"
     echo "  • Detect and suggest development commands for your project"
     echo "  • Work with any git repository"
+    echo ""
+    echo "Quick tmux tips:"
+    echo "  • Inside tmux: Ctrl+b then s → shows session switcher"
+    echo "  • Inside tmux: Ctrl+b then w → shows window/pane tree"
+    echo "  • From terminal: multi switch → interactive environment picker"
 }
 
 # Main script logic
