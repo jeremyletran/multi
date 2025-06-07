@@ -62,8 +62,8 @@ Detects and suggests commands for:
 1. **Clone and make executable:**
 
 ```bash
-git clone <repo-url> ~/.local/bin/dev-tools
-cd ~/.local/bin/dev-tools
+git clone git@github.com:jeremyletran/multi.git ~/.local/bin/multi
+cd ~/.local/bin/multi
 chmod +x multi setup-multi
 ```
 
