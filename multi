@@ -5,15 +5,34 @@
 
 set -e
 
-# Get the current git repository root
+# Get the current git repository root (main repo, not worktree)
 get_repo_root() {
-    git rev-parse --show-toplevel 2>/dev/null
+    local current_root=$(git rev-parse --show-toplevel 2>/dev/null)
+    
+    # Check if we're in a worktree by looking at worktree list
+    local worktree_info=$(git worktree list --porcelain 2>/dev/null)
+    if [[ -n "$worktree_info" ]]; then
+        # Get the main worktree (first in the list, which is always the main repo)
+        local main_root=$(echo "$worktree_info" | grep '^worktree ' | head -1 | cut -d' ' -f2-)
+        
+        # If we found a main root and we're not already there, use it
+        if [[ -n "$main_root" && "$current_root" != "$main_root" ]]; then
+            echo "$main_root"
+        else
+            echo "$current_root"
+        fi
+    else
+        echo "$current_root"
+    fi
 }
 
 # Check if we're in a git repository
 check_git_repo() {
     if ! git rev-parse --is-inside-work-tree &>/dev/null; then
-        log_error "Not in a git repository. Please run this command from within a git repo."
+        log_error "Not in a git repository."
+        echo ""
+        echo "Please run this command from within a git repository."
+        echo "If you need to initialize a git repo: git init"
         exit 1
     fi
 }
@@ -122,6 +141,95 @@ branch_exists() {
     
     # Check if branch exists on remote
     if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        return 0
+    fi
+    
+    return 1
+}
+
+# Check if branch exists on remote
+branch_exists_on_remote() {
+    local branch="$1"
+    git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/remotes/origin/$branch"
+}
+
+# Check for unpushed commits in a worktree
+has_unpushed_commits() {
+    local worktree_path="$1"
+    local branch="$2"
+    
+    # Change to the worktree directory to check its status
+    if [[ ! -d "$worktree_path" ]]; then
+        return 1
+    fi
+    
+    # Get the current branch in the worktree
+    local current_branch=$(git -C "$worktree_path" branch --show-current 2>/dev/null)
+    if [[ -z "$current_branch" ]]; then
+        return 1
+    fi
+    
+    # Check if remote tracking branch exists
+    if ! git -C "$worktree_path" show-ref --verify --quiet "refs/remotes/origin/$current_branch" 2>/dev/null; then
+        # No remote tracking branch means all commits are unpushed
+        local commit_count=$(git -C "$worktree_path" rev-list --count HEAD 2>/dev/null || echo "0")
+        if [[ "$commit_count" -gt 0 ]]; then
+            return 0  # Has commits but no remote tracking
+        fi
+        return 1
+    fi
+    
+    # Check if there are commits ahead of remote
+    local ahead=$(git -C "$worktree_path" rev-list --count "origin/$current_branch..HEAD" 2>/dev/null || echo "0")
+    if [[ "$ahead" -gt 0 ]]; then
+        return 0  # Has unpushed commits
+    fi
+    
+    return 1  # No unpushed commits
+}
+
+# Get count of unpushed commits
+get_unpushed_commit_count() {
+    local worktree_path="$1"
+    
+    if [[ ! -d "$worktree_path" ]]; then
+        echo "0"
+        return
+    fi
+    
+    local current_branch=$(git -C "$worktree_path" branch --show-current 2>/dev/null)
+    if [[ -z "$current_branch" ]]; then
+        echo "0"
+        return
+    fi
+    
+    # Check if remote tracking branch exists
+    if ! git -C "$worktree_path" show-ref --verify --quiet "refs/remotes/origin/$current_branch" 2>/dev/null; then
+        # No remote tracking branch - count all commits
+        git -C "$worktree_path" rev-list --count HEAD 2>/dev/null || echo "0"
+        return
+    fi
+    
+    # Count commits ahead of remote
+    git -C "$worktree_path" rev-list --count "origin/$current_branch..HEAD" 2>/dev/null || echo "0"
+}
+
+# Check if worktree has uncommitted changes
+has_uncommitted_changes() {
+    local worktree_path="$1"
+    
+    if [[ ! -d "$worktree_path" ]]; then
+        return 1
+    fi
+    
+    # Check for staged or unstaged changes
+    if ! git -C "$worktree_path" diff --quiet 2>/dev/null || ! git -C "$worktree_path" diff --cached --quiet 2>/dev/null; then
+        return 0
+    fi
+    
+    # Check for untracked files
+    local untracked=$(git -C "$worktree_path" ls-files --others --exclude-standard 2>/dev/null | wc -l)
+    if [[ "$untracked" -gt 0 ]]; then
         return 0
     fi
     
@@ -319,6 +427,8 @@ switch_env() {
     if ! session_exists "$session_name"; then
         log_error "No development environment found for branch: $branch"
         log_info "Create one first with: multi start $branch"
+        echo ""
+        log_info "Tip: Use 'multi list' to see all available environments"
         exit 1
     fi
     
@@ -336,6 +446,22 @@ switch_env() {
 # List all development environments
 list_envs() {
     check_git_repo
+    
+    # Show current location context
+    local current_dir=$(pwd)
+    local relative_path=${current_dir#"$PROJECT_ROOT"}
+    if [[ "$relative_path" != "$current_dir" ]]; then
+        if [[ "$relative_path" == "" ]]; then
+            echo "Current location: Repository root"
+        elif [[ "$relative_path" == "/.dev-worktrees"* ]]; then
+            local worktree_name=${relative_path#"/.dev-worktrees/"}
+            worktree_name=${worktree_name%%/*}
+            echo "Current location: Worktree '$worktree_name'"
+        else
+            echo "Current location: $relative_path"
+        fi
+        echo ""
+    fi
     
     echo "Development Environments for: $REPO_NAME"
     echo "==========================================="
@@ -372,7 +498,13 @@ list_envs() {
     
     if [[ "$found_any" = false ]]; then
         echo "No development environments found."
-        echo "Create one with: multi start <branch-name>"
+        echo ""
+        echo "Getting started:"
+        echo "  • Create your first environment: multi start <branch-name>"
+        echo "  • Example: multi start feature/my-feature"
+        echo ""
+        echo "Note: This command works from anywhere within the repository,"
+        echo "      including from inside worktrees in .dev-worktrees/"
     fi
 }
 
@@ -423,18 +555,72 @@ cleanup_env() {
     # Stop tmux session
     stop_env "$branch"
     
-    # Remove worktree
+    # Remove worktree with safety checks
     if [[ -d "$worktree_path" ]]; then
+        log_info "Checking worktree safety before removal: $worktree_path"
+        
+        # Check for uncommitted changes
+        local has_uncommitted=false
+        if has_uncommitted_changes "$worktree_path"; then
+            has_uncommitted=true
+            log_warning "⚠️  Worktree has uncommitted changes"
+        fi
+        
+        # Check for unpushed commits
+        local has_unpushed=false
+        local unpushed_count=0
+        if has_unpushed_commits "$worktree_path" "$branch"; then
+            has_unpushed=true
+            unpushed_count=$(get_unpushed_commit_count "$worktree_path")
+            log_warning "⚠️  Worktree has $unpushed_count unpushed commit(s)"
+            
+            # Check if branch exists on remote
+            local current_branch=$(git -C "$worktree_path" branch --show-current 2>/dev/null)
+            if ! branch_exists_on_remote "$current_branch"; then
+                log_warning "⚠️  Branch '$current_branch' does not exist on remote - all commits will be lost!"
+            fi
+        fi
+        
+        # If there are safety concerns and not forcing, require confirmation
+        if [[ "$has_uncommitted" = true || "$has_unpushed" = true ]] && [[ "$force" != true ]]; then
+            echo ""
+            log_error "🛑 SAFETY CHECK FAILED"
+            echo ""
+            echo "Potential data loss detected:"
+            
+            if [[ "$has_uncommitted" = true ]]; then
+                echo "  • Uncommitted changes will be lost"
+            fi
+            
+            if [[ "$has_unpushed" = true ]]; then
+                echo "  • $unpushed_count unpushed commit(s) will be lost forever"
+                echo ""
+                echo "Recent commits that will be lost:"
+                git -C "$worktree_path" log --oneline -n 3 2>/dev/null | sed 's/^/    /'
+            fi
+            
+            echo ""
+            echo "To proceed safely:"
+            echo "  1. Commit your changes:     cd '$worktree_path' && git add . && git commit -m 'Save work'"
+            echo "  2. Push your changes:       cd '$worktree_path' && git push origin $branch"
+            echo "  3. Then run cleanup again:  multi cleanup $branch"
+            echo ""
+            echo "Or to force removal anyway:  multi cleanup $branch --force"
+            echo ""
+            log_warning "Cleanup aborted to prevent data loss"
+            return 1
+        fi
+        
+        # Proceed with removal
         if [[ "$force" = true ]]; then
-            log_info "Force removing worktree: $worktree_path"
+            log_warning "⚠️  Force removing worktree (ignoring safety checks): $worktree_path"
+            if [[ "$has_unpushed" = true ]]; then
+                log_warning "⚠️  $unpushed_count unpushed commit(s) will be permanently lost!"
+            fi
             git -C "$PROJECT_ROOT" worktree remove --force "$worktree_path"
         else
             log_info "Removing worktree: $worktree_path"
-            if ! git -C "$PROJECT_ROOT" worktree remove "$worktree_path" 2>/dev/null; then
-                log_warning "Worktree has uncommitted changes. Use --force to remove anyway."
-                log_info "Or commit/stash changes first, then run cleanup again."
-                return 1
-            fi
+            git -C "$PROJECT_ROOT" worktree remove "$worktree_path"
         fi
         log_success "Worktree removed"
     else
@@ -453,6 +639,63 @@ cleanup_all() {
     check_git_repo
     log_info "Cleaning up all development environments for: $REPO_NAME"
     
+    # Check all worktrees for safety issues before proceeding
+    local worktrees_with_issues=()
+    local total_unpushed=0
+    local has_any_issues=false
+    
+    if [[ -d "$WORKTREE_DIR" ]] && [[ "$force" != true ]]; then
+        log_info "Performing safety checks on all worktrees..."
+        
+        for worktree in "$WORKTREE_DIR"/*; do
+            if [[ -d "$worktree" ]]; then
+                local branch=$(basename "$worktree")
+                local issues=()
+                
+                # Check for uncommitted changes
+                if has_uncommitted_changes "$worktree"; then
+                    issues+=("uncommitted changes")
+                    has_any_issues=true
+                fi
+                
+                # Check for unpushed commits
+                if has_unpushed_commits "$worktree" "$branch"; then
+                    local count=$(get_unpushed_commit_count "$worktree")
+                    issues+=("$count unpushed commit(s)")
+                    total_unpushed=$((total_unpushed + count))
+                    has_any_issues=true
+                fi
+                
+                if [[ ${#issues[@]} -gt 0 ]]; then
+                    worktrees_with_issues+=("$branch: ${issues[*]}")
+                fi
+            fi
+        done
+        
+        # If there are issues and not forcing, show warnings and abort
+        if [[ "$has_any_issues" = true ]]; then
+            echo ""
+            log_error "🛑 SAFETY CHECK FAILED FOR CLEANUP-ALL"
+            echo ""
+            echo "The following worktrees have potential data loss:"
+            for issue in "${worktrees_with_issues[@]}"; do
+                echo "  • $issue"
+            done
+            echo ""
+            echo "Total unpushed commits that will be lost: $total_unpushed"
+            echo ""
+            echo "To proceed safely:"
+            echo "  1. Clean up each worktree individually: multi cleanup <branch-name>"
+            echo "  2. Or commit and push all changes first"
+            echo "  3. Then run cleanup-all again"
+            echo ""
+            echo "Or to force removal anyway: multi cleanup-all --force"
+            echo ""
+            log_warning "Cleanup-all aborted to prevent data loss"
+            return 1
+        fi
+    fi
+    
     # Kill all dev sessions for this repo
     if tmux list-sessions 2>/dev/null | grep -q "^${SESSION_PREFIX}-"; then
         log_info "Stopping all tmux sessions..."
@@ -464,12 +707,17 @@ cleanup_all() {
         for worktree in "$WORKTREE_DIR"/*; do
             if [[ -d "$worktree" ]]; then
                 local branch=$(basename "$worktree")
-                log_info "Removing worktree: $branch"
                 if [[ "$force" = true ]]; then
+                    log_warning "⚠️  Force removing worktree: $branch"
+                    if has_unpushed_commits "$worktree" "$branch"; then
+                        local count=$(get_unpushed_commit_count "$worktree")
+                        log_warning "⚠️  $count unpushed commit(s) will be permanently lost!"
+                    fi
                     git -C "$PROJECT_ROOT" worktree remove --force "$worktree" 2>/dev/null || true
                 else
+                    log_info "Removing worktree: $branch"
                     git -C "$PROJECT_ROOT" worktree remove "$worktree" 2>/dev/null || {
-                        log_warning "Worktree $branch has uncommitted changes. Use --force to remove anyway."
+                        log_warning "Worktree $branch could not be removed"
                     }
                 fi
             fi
@@ -543,7 +791,7 @@ main() {
             ;;
         "cleanup")
             init_git_vars
-            cleanup_env "$@"
+            cleanup_env "$2" "$3"
             ;;
         "cleanup-all")
             init_git_vars
