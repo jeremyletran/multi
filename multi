@@ -244,6 +244,46 @@ get_worktree_path() {
     echo "$WORKTREE_DIR/$safe_branch"
 }
 
+# Copy essential files from main repo to worktree
+copy_essential_files() {
+    local worktree_path="$1"
+    local files_to_copy=(
+        "*.pem"
+        "*.key" 
+        "*.cert"
+        ".env*"
+        "node_modules"
+    )
+    
+    log_info "Copying essential files to worktree..."
+    
+    for pattern in "${files_to_copy[@]}"; do
+        # Use find to handle patterns properly
+        find "$PROJECT_ROOT" -maxdepth 1 -name "$pattern" -not -path "*/.dev-worktrees/*" 2>/dev/null | while read -r file; do
+            if [[ -e "$file" ]]; then
+                local filename=$(basename "$file")
+                log_info "Copying $filename..."
+                if [[ -d "$file" ]]; then
+                    cp -r "$file" "$worktree_path/"
+                else
+                    cp "$file" "$worktree_path/"
+                fi
+            fi
+        done
+    done
+    
+    # Run package manager install if needed
+    if [[ -f "$worktree_path/package.json" ]]; then
+        if [[ -f "$PROJECT_ROOT/yarn.lock" ]] && command -v yarn &>/dev/null; then
+            log_info "Installing dependencies with yarn..."
+            (cd "$worktree_path" && yarn install --frozen-lockfile 2>/dev/null || yarn install)
+        elif command -v npm &>/dev/null; then
+            log_info "Installing dependencies with npm..."
+            (cd "$worktree_path" && npm ci 2>/dev/null || npm install)
+        fi
+    fi
+}
+
 # Create git worktree
 create_worktree() {
     local branch="$1"
@@ -271,6 +311,9 @@ create_worktree() {
     fi
     
     log_success "Worktree created: $worktree_path"
+    
+    # Copy essential files from main repo
+    copy_essential_files "$worktree_path"
 }
 
 # Get tmux session name
@@ -732,6 +775,7 @@ cleanup_all() {
     
     log_success "Cleanup complete for: $REPO_NAME"
 }
+
 
 # Show usage information
 show_usage() {

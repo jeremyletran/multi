@@ -116,11 +116,15 @@ install_scripts() {
     # Create ~/.local/bin if it doesn't exist
     mkdir -p "$HOME/.local/bin"
     
-    # Copy multi script
+    # Create symlink to multi script
     if [[ -f "$SCRIPT_DIR/multi" ]]; then
-        cp "$SCRIPT_DIR/multi" "$HOME/.local/bin/multi"
-        chmod +x "$HOME/.local/bin/multi"
-        log_success "Installed multi to ~/.local/bin/multi"
+        # Remove existing file/symlink if it exists
+        rm -f "$HOME/.local/bin/multi"
+        
+        # Create symlink to the source file
+        ln -sf "$SCRIPT_DIR/multi" "$HOME/.local/bin/multi"
+        log_success "Created symlink: ~/.local/bin/multi -> $SCRIPT_DIR/multi"
+        log_info "Changes to the source file will take effect immediately"
     else
         log_error "multi script not found in $SCRIPT_DIR"
         return 1
