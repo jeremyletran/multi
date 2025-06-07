@@ -1,0 +1,565 @@
+#!/bin/bash
+
+# Multi-Branch Development Environment Manager  
+# Manages git worktrees, tmux sessions, and editor instances for any git repository
+
+set -e
+
+# Get the current git repository root
+get_repo_root() {
+    git rev-parse --show-toplevel 2>/dev/null
+}
+
+# Check if we're in a git repository
+check_git_repo() {
+    if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+        log_error "Not in a git repository. Please run this command from within a git repo."
+        exit 1
+    fi
+}
+
+# Initialize git-related variables (only when in a git repo)
+init_git_vars() {
+    if git rev-parse --is-inside-work-tree &>/dev/null; then
+        PROJECT_ROOT="$(get_repo_root)"
+        REPO_NAME="$(basename "$PROJECT_ROOT")"
+        WORKTREE_DIR="$PROJECT_ROOT/.dev-worktrees"
+        SESSION_PREFIX="multi-$REPO_NAME"
+    else
+        PROJECT_ROOT=""
+        REPO_NAME=""
+        WORKTREE_DIR=""
+        SESSION_PREFIX=""
+    fi
+}
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Logging functions
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Check if tmux is installed
+check_tmux() {
+    if ! command -v tmux &> /dev/null; then
+        log_error "tmux is not installed. Please install it first:"
+        echo "  macOS: brew install tmux"
+        echo "  Ubuntu: sudo apt-get install tmux"
+        exit 1
+    fi
+}
+
+# Check if Claude Code is available
+check_claude() {
+    if command -v claude &> /dev/null; then
+        return 0
+    elif command -v cursor &> /dev/null; then
+        return 1  # Cursor available but not Claude
+    else
+        return 2  # Neither available
+    fi
+}
+
+# Get the appropriate editor command
+get_editor_command() {
+    check_claude
+    local status=$?
+    
+    case $status in
+        0) echo "claude" ;;
+        1) echo "cursor" ;;
+        2) echo "code" ;;
+    esac
+}
+
+# Create worktree directory if it doesn't exist
+ensure_worktree_dir() {
+    if [[ ! -d "$WORKTREE_DIR" ]]; then
+        mkdir -p "$WORKTREE_DIR"
+        log_info "Created worktree directory: $WORKTREE_DIR"
+        
+        # Add to .gitignore if it exists
+        if [[ -f "$PROJECT_ROOT/.gitignore" ]]; then
+            if ! grep -q ".dev-worktrees" "$PROJECT_ROOT/.gitignore"; then
+                echo ".dev-worktrees/" >> "$PROJECT_ROOT/.gitignore"
+                log_info "Added .dev-worktrees/ to .gitignore"
+            fi
+        fi
+    fi
+}
+
+# Get current git branch
+get_current_branch() {
+    git -C "$PROJECT_ROOT" branch --show-current
+}
+
+# Check if branch exists locally or remotely
+branch_exists() {
+    local branch="$1"
+    
+    # Check if branch exists locally
+    if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/heads/$branch"; then
+        return 0
+    fi
+    
+    # Check if branch exists on remote
+    if git -C "$PROJECT_ROOT" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        return 0
+    fi
+    
+    return 1
+}
+
+# Create or get worktree path
+get_worktree_path() {
+    local branch="$1"
+    # Replace slashes with dashes for directory names
+    local safe_branch="${branch//\//-}"
+    echo "$WORKTREE_DIR/$safe_branch"
+}
+
+# Create git worktree
+create_worktree() {
+    local branch="$1"
+    local worktree_path="$(get_worktree_path "$branch")"
+    
+    if [[ -d "$worktree_path" ]]; then
+        log_info "Worktree for branch '$branch' already exists at: $worktree_path"
+        return 0
+    fi
+    
+    log_info "Creating worktree for branch: $branch"
+    
+    # Ensure we have the latest main branch
+    log_info "Fetching latest changes from main..."
+    git -C "$PROJECT_ROOT" fetch origin main:main 2>/dev/null || git -C "$PROJECT_ROOT" fetch origin main 2>/dev/null || true
+    
+    if branch_exists "$branch"; then
+        # Branch exists, create worktree from it
+        log_info "Branch exists, creating worktree from existing branch"
+        git -C "$PROJECT_ROOT" worktree add "$worktree_path" "$branch"
+    else
+        # Branch doesn't exist, create new branch from main and worktree
+        log_info "Branch '$branch' doesn't exist. Creating new branch from main."
+        git -C "$PROJECT_ROOT" worktree add -b "$branch" "$worktree_path" main
+    fi
+    
+    log_success "Worktree created: $worktree_path"
+}
+
+# Get tmux session name
+get_session_name() {
+    local branch="$1"
+    # Replace slashes with dashes for session names
+    local safe_branch="${branch//\//-}"
+    echo "${SESSION_PREFIX}-${safe_branch}"
+}
+
+# Check if tmux session exists
+session_exists() {
+    local session_name="$1"
+    tmux has-session -t "$session_name" 2>/dev/null
+}
+
+# Detect package manager and dev commands
+detect_dev_commands() {
+    local worktree_path="$1"
+    local commands=()
+    
+    # Check for package.json (Node.js project)
+    if [[ -f "$worktree_path/package.json" ]]; then
+        # Check for yarn
+        if [[ -f "$worktree_path/yarn.lock" ]] && command -v yarn &>/dev/null; then
+            if grep -q '"dev"' "$worktree_path/package.json"; then
+                commands+=("yarn dev")
+            fi
+            if grep -q '"start"' "$worktree_path/package.json"; then
+                commands+=("yarn start")
+            fi
+        # Check for npm
+        elif [[ -f "$worktree_path/package-lock.json" ]] || command -v npm &>/dev/null; then
+            if grep -q '"dev"' "$worktree_path/package.json"; then
+                commands+=("npm run dev")
+            fi
+            if grep -q '"start"' "$worktree_path/package.json"; then
+                commands+=("npm start")
+            fi
+        fi
+    fi
+    
+    # Check for Cargo.toml (Rust project)
+    if [[ -f "$worktree_path/Cargo.toml" ]] && command -v cargo &>/dev/null; then
+        commands+=("cargo run")
+    fi
+    
+    # Check for Makefile
+    if [[ -f "$worktree_path/Makefile" ]]; then
+        commands+=("make dev" "make run")
+    fi
+    
+    # Check for docker-compose
+    if [[ -f "$worktree_path/docker-compose.yml" ]] && command -v docker-compose &>/dev/null; then
+        commands+=("docker-compose up")
+    fi
+    
+    echo "${commands[@]}"
+}
+
+# Create tmux session
+create_tmux_session() {
+    local branch="$1"
+    local worktree_path="$(get_worktree_path "$branch")"
+    local session_name="$(get_session_name "$branch")"
+    
+    if session_exists "$session_name"; then
+        log_info "Tmux session '$session_name' already exists"
+        return 0
+    fi
+    
+    log_info "Creating tmux session: $session_name"
+    
+    # Create new tmux session in detached mode
+    tmux new-session -d -s "$session_name" -c "$worktree_path"
+    
+    # Window 0: Terminal with easy cursor launch
+    tmux rename-window -t "$session_name:0" "main"
+    tmux send-keys -t "$session_name:main" "# Welcome to $branch development environment" Enter
+    tmux send-keys -t "$session_name:main" "# Run 'cursor .' to open Cursor in this directory" Enter
+    tmux send-keys -t "$session_name:main" "# Or 'claude .' for Claude Code" Enter
+    tmux send-keys -t "$session_name:main" ""
+    
+    # Window 1: Development server (if applicable)
+    tmux new-window -t "$session_name" -n "dev" -c "$worktree_path"
+    
+    # Detect and suggest dev commands
+    local dev_commands=($(detect_dev_commands "$worktree_path"))
+    if [[ ${#dev_commands[@]} -gt 0 ]]; then
+        local suggested_cmd="${dev_commands[0]}"
+        tmux send-keys -t "$session_name:dev" "# Suggested dev command: $suggested_cmd" Enter
+        tmux send-keys -t "$session_name:dev" ""
+    fi
+    
+    # Window 2: Git operations
+    tmux new-window -t "$session_name" -n "git" -c "$worktree_path"
+    tmux send-keys -t "$session_name:git" "git status" Enter
+    
+    # Select the main window by default
+    tmux select-window -t "$session_name:main"
+    
+    log_success "Tmux session created: $session_name"
+    
+    # Show available dev commands
+    if [[ ${#dev_commands[@]} -gt 0 ]]; then
+        log_info "Detected development commands:"
+        for cmd in "${dev_commands[@]}"; do
+            echo "  • $cmd"
+        done
+    fi
+}
+
+# Start development environment
+start_env() {
+    local branch="$1"
+    
+    if [[ -z "$branch" ]]; then
+        log_error "Branch name is required"
+        show_usage
+        exit 1
+    fi
+    
+    check_git_repo
+    ensure_worktree_dir
+    create_worktree "$branch"
+    create_tmux_session "$branch"
+    
+    local session_name="$(get_session_name "$branch")"
+    log_success "Development environment ready for branch: $branch"
+    log_info "Repository: $REPO_NAME"
+    log_info "Switching to session..."
+    
+    # Always auto-attach to the session
+    if [[ -n "$TMUX" ]]; then
+        tmux switch-client -t "$session_name"
+    else
+        tmux attach -t "$session_name"
+    fi
+}
+
+# Switch to existing environment
+switch_env() {
+    local branch="$1"
+    
+    if [[ -z "$branch" ]]; then
+        log_error "Branch name is required"
+        show_usage
+        exit 1
+    fi
+    
+    check_git_repo
+    local session_name="$(get_session_name "$branch")"
+    
+    if ! session_exists "$session_name"; then
+        log_error "No development environment found for branch: $branch"
+        log_info "Create one first with: multi start $branch"
+        exit 1
+    fi
+    
+    log_info "Switching to development environment: $branch ($REPO_NAME)"
+    
+    if [[ -n "$TMUX" ]]; then
+        # If we're already in tmux, switch to the session
+        tmux switch-client -t "$session_name"
+    else
+        # If we're not in tmux, attach to the session
+        tmux attach -t "$session_name"
+    fi
+}
+
+# List all development environments
+list_envs() {
+    check_git_repo
+    
+    echo "Development Environments for: $REPO_NAME"
+    echo "==========================================="
+    
+    local found_any=false
+    
+    # List tmux sessions for this repo
+    if tmux list-sessions 2>/dev/null | grep -q "^${SESSION_PREFIX}-"; then
+        echo -e "\n${GREEN}Active tmux sessions:${NC}"
+        tmux list-sessions 2>/dev/null | grep "^${SESSION_PREFIX}-" | while read line; do
+            local session_name=$(echo "$line" | cut -d: -f1)
+            local branch=${session_name#"$SESSION_PREFIX"-}
+            # Convert dashes back to slashes for display
+            branch=${branch//-/\/}
+            local status=$(echo "$line" | grep -o "(attached)" || echo "(detached)")
+            echo "  • $branch $status"
+            found_any=true
+        done
+    fi
+    
+    # List worktrees for this repo
+    if [[ -d "$WORKTREE_DIR" ]] && [[ $(ls -A "$WORKTREE_DIR" 2>/dev/null | wc -l) -gt 0 ]]; then
+        echo -e "\n${BLUE}Available worktrees:${NC}"
+        for worktree in "$WORKTREE_DIR"/*; do
+            if [[ -d "$worktree" ]]; then
+                local branch=$(basename "$worktree")
+                # Convert dashes back to slashes for display
+                branch=${branch//-/\/}
+                echo "  • $branch"
+                found_any=true
+            fi
+        done
+    fi
+    
+    if [[ "$found_any" = false ]]; then
+        echo "No development environments found."
+        echo "Create one with: multi start <branch-name>"
+    fi
+}
+
+# Stop development environment
+stop_env() {
+    local branch="$1"
+    
+    if [[ -z "$branch" ]]; then
+        log_error "Branch name is required"
+        show_usage
+        exit 1
+    fi
+    
+    check_git_repo
+    local session_name="$(get_session_name "$branch")"
+    
+    if session_exists "$session_name"; then
+        log_info "Killing tmux session: $session_name"
+        tmux kill-session -t "$session_name"
+        log_success "Tmux session stopped"
+    else
+        log_warning "No tmux session found for branch: $branch"
+    fi
+}
+
+# Clean up development environment
+cleanup_env() {
+    local branch="$1"
+    local force=false
+    
+    if [[ "$branch" == "--force" ]]; then
+        force=true
+        branch="$2"
+    elif [[ "$2" == "--force" ]]; then
+        force=true
+    fi
+    
+    if [[ -z "$branch" ]]; then
+        log_error "Branch name is required"
+        show_usage
+        exit 1
+    fi
+    
+    check_git_repo
+    local session_name="$(get_session_name "$branch")"
+    local worktree_path="$(get_worktree_path "$branch")"
+    
+    # Stop tmux session
+    stop_env "$branch"
+    
+    # Remove worktree
+    if [[ -d "$worktree_path" ]]; then
+        if [[ "$force" = true ]]; then
+            log_info "Force removing worktree: $worktree_path"
+            git -C "$PROJECT_ROOT" worktree remove --force "$worktree_path"
+        else
+            log_info "Removing worktree: $worktree_path"
+            if ! git -C "$PROJECT_ROOT" worktree remove "$worktree_path" 2>/dev/null; then
+                log_warning "Worktree has uncommitted changes. Use --force to remove anyway."
+                log_info "Or commit/stash changes first, then run cleanup again."
+                return 1
+            fi
+        fi
+        log_success "Worktree removed"
+    else
+        log_warning "No worktree found for branch: $branch"
+    fi
+}
+
+# Clean up all environments for this repo
+cleanup_all() {
+    local force=false
+    
+    if [[ "$1" == "--force" ]]; then
+        force=true
+    fi
+    
+    check_git_repo
+    log_info "Cleaning up all development environments for: $REPO_NAME"
+    
+    # Kill all dev sessions for this repo
+    if tmux list-sessions 2>/dev/null | grep -q "^${SESSION_PREFIX}-"; then
+        log_info "Stopping all tmux sessions..."
+        tmux list-sessions 2>/dev/null | grep "^${SESSION_PREFIX}-" | cut -d: -f1 | xargs -I {} tmux kill-session -t {}
+    fi
+    
+    # Remove all worktrees for this repo
+    if [[ -d "$WORKTREE_DIR" ]]; then
+        for worktree in "$WORKTREE_DIR"/*; do
+            if [[ -d "$worktree" ]]; then
+                local branch=$(basename "$worktree")
+                log_info "Removing worktree: $branch"
+                if [[ "$force" = true ]]; then
+                    git -C "$PROJECT_ROOT" worktree remove --force "$worktree" 2>/dev/null || true
+                else
+                    git -C "$PROJECT_ROOT" worktree remove "$worktree" 2>/dev/null || {
+                        log_warning "Worktree $branch has uncommitted changes. Use --force to remove anyway."
+                    }
+                fi
+            fi
+        done
+        
+        # Remove empty worktree directory
+        if [[ $(ls -A "$WORKTREE_DIR" 2>/dev/null | wc -l) -eq 0 ]]; then
+            rmdir "$WORKTREE_DIR"
+            log_success "Removed empty worktree directory"
+        fi
+    fi
+    
+    log_success "Cleanup complete for: $REPO_NAME"
+}
+
+# Show usage information
+show_usage() {
+    echo "Multi-Branch Development Environment Manager"
+    echo "==========================================="
+    echo ""
+    echo "Manages git worktrees, tmux sessions, and editor instances for any git repository."
+    echo ""
+    echo "Usage: multi <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  start <branch>     Create and start development environment for branch (auto-switches)"
+    echo "  switch <branch>    Switch to existing development environment"
+    echo "  stop <branch>      Stop tmux session for branch"
+    echo "  cleanup <branch>   Clean up development environment (stop + remove worktree)"
+    echo "  cleanup-all        Clean up all development environments for current repo"
+    echo "  list               List all development environments for current repo"
+    echo "  help               Show this help message"
+    echo ""
+    echo "Options:"
+    echo "  --force            Force operations (for cleanup commands)"
+    echo ""
+    echo "Examples:"
+    echo "  multi start feature/new-dashboard"
+    echo "  multi switch main"
+    echo "  multi cleanup feature/old-feature --force"
+    echo "  multi list"
+    echo ""
+    echo "The tool will automatically:"
+    echo "  • Create git worktrees in .dev-worktrees/ (branched from main)"
+    echo "  • Set up tmux sessions with main, dev, and git windows"
+    echo "  • Switch to the new session immediately"
+    echo "  • Provide easy commands to launch Cursor or Claude Code"
+    echo "  • Detect and suggest development commands for your project"
+    echo "  • Work with any git repository"
+}
+
+# Main script logic
+main() {
+    check_tmux
+    
+    case "${1:-help}" in
+        "help"|"--help"|"-h")
+            show_usage
+            ;;
+        "start")
+            init_git_vars
+            start_env "$2"
+            ;;
+        "switch")
+            init_git_vars
+            switch_env "$2"
+            ;;
+        "stop")
+            init_git_vars
+            stop_env "$2"
+            ;;
+        "cleanup")
+            init_git_vars
+            cleanup_env "$@"
+            ;;
+        "cleanup-all")
+            init_git_vars
+            cleanup_all "$2"
+            ;;
+        "list")
+            init_git_vars
+            list_envs
+            ;;
+        *)
+            log_error "Unknown command: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+}
+
+# Run main function with all arguments
+main "$@"
