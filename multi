@@ -252,7 +252,6 @@ copy_essential_files() {
         "*.key" 
         "*.cert"
         ".env*"
-        "node_modules"
     )
     
     log_info "Copying essential files to worktree..."
@@ -263,23 +262,22 @@ copy_essential_files() {
             if [[ -e "$file" ]]; then
                 local filename=$(basename "$file")
                 log_info "Copying $filename..."
-                if [[ -d "$file" ]]; then
-                    cp -r "$file" "$worktree_path/"
-                else
-                    cp "$file" "$worktree_path/"
-                fi
+                cp "$file" "$worktree_path/"
             fi
         done
     done
     
-    # Run package manager install if needed
+    # Install dependencies if package.json exists
     if [[ -f "$worktree_path/package.json" ]]; then
         if [[ -f "$PROJECT_ROOT/yarn.lock" ]] && command -v yarn &>/dev/null; then
             log_info "Installing dependencies with yarn..."
             (cd "$worktree_path" && yarn install --frozen-lockfile 2>/dev/null || yarn install)
-        elif command -v npm &>/dev/null; then
+        elif [[ -f "$PROJECT_ROOT/package-lock.json" ]] && command -v npm &>/dev/null; then
             log_info "Installing dependencies with npm..."
             (cd "$worktree_path" && npm ci 2>/dev/null || npm install)
+        elif command -v npm &>/dev/null; then
+            log_info "Installing dependencies with npm..."
+            (cd "$worktree_path" && npm install)
         fi
     fi
 }

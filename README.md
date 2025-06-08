@@ -1,59 +1,76 @@
-# Development Environment Tools
+# Multi-Dev: Git Worktree Automation
 
-A streamlined collection of scripts for managing git worktrees, tmux sessions, and development environments across multiple branches.
+**Save 2-3 minutes per branch** with automated git worktree setup, configuration management, and safety features.
 
 ## What this does
 
-These tools enable **parallel development workflows** by creating isolated environments for different git branches. Perfect for Claude Code users who want to work on multiple features simultaneously while waiting for long-running tasks to complete.
+Automates the tedious manual steps of creating isolated development environments for different git branches. One command replaces 5-6 manual steps and eliminates common mistakes.
 
-Key benefits:
+**Time-saving automation:**
+- **One-command setup**: `multi start feature-branch` creates worktree, copies configs, installs dependencies
+- **Smart configuration**: Automatically copies `.env*`, `*.pem`, certificates to each worktree  
+- **Dependency management**: Detects yarn/npm and runs clean installs with proper lockfiles
+- **Organized structure**: Creates consistent `.dev-worktrees/` organization you can rely on
 
-- **Parallel task execution**: Work on multiple features in the same repo with separate Claude Code instances
-- **No context switching overhead**: Each branch maintains its own development server, editor state, and git context
-- **Isolated workspaces**: Each branch gets its own git worktree and tmux session
-- **Automatic setup**: One command creates everything you need
-- **Smart project detection**: Automatically detects and suggests dev commands (npm/yarn/cargo/make/docker)
-- **Editor integration**: Easy commands to launch Cursor, Claude Code, or VS Code
-- **Clean workflows**: No more stashing, conflicts, or lost work when switching branches
+**Safety features:**
+- **Data loss prevention**: Detects uncommitted changes and unpushed commits before cleanup
+- **Smart cleanup**: Safe removal with confirmation prompts for risky operations
+- **Structured workspace**: Organized file management prevents lost work
+
+**Workflow enhancements:**
+- **Multiple environments**: Work on different branches simultaneously without conflicts
+- **Tmux integration**: Optional persistent sessions with structured 3-window layout
+- **Easy switching**: Quick environment switching with interactive menus
+- **Project detection**: Auto-detects and suggests dev commands (npm/yarn/cargo/docker)
 
 ## Features
 
-### 🚀 Quick Environment Creation
+### 🚀 Automated Environment Setup
 
 ```bash
 multi start feature/new-dashboard
 ```
 
-Creates:
+**Automatically handles:**
+- Creates git worktree from main branch in organized `.dev-worktrees/` folder
+- Copies essential config files (`.env*`, `*.pem`, certificates) to new worktree
+- Detects project type and runs appropriate dependency installation:
+  - `yarn install --frozen-lockfile` (if yarn.lock exists)
+  - `npm ci` (if package-lock.json exists) 
+  - `npm install` (fallback)
+- Sets up tmux session with 3 organized windows:
+  - `main`: Editor launch commands ready
+  - `dev`: Development server workspace 
+  - `git`: Git operations and status
+- Suggests project-specific dev commands
 
-- Git worktree from main branch
-- **3-window tmux session for optimal parallel workflow:**
-  - `main` window: Editor launch (Claude Code, Cursor, VS Code)
-  - `dev` window: Development servers and build processes
-  - `git` window: Git operations and repository management
-- Automatic session switching
-- Development command suggestions
-
-### 🔄 Easy Branch Switching
-
-```bash
-multi switch main
-multi list  # See all environments
-```
-
-### 🧹 Clean Workspace Management
+### 🔄 Easy Environment Management
 
 ```bash
-multi cleanup feature/old-branch    # Remove specific environment
-multi cleanup-all                   # Clean everything
+multi switch main        # Switch to specific environment
+multi switch            # Interactive menu of all environments  
+multi list              # See all environments with status
 ```
 
-### 🛠 Automatic Project Detection
+### 🛡️ Safe Cleanup with Data Protection
 
-Detects and suggests commands for:
+```bash
+multi cleanup feature/old-branch    # Safe removal with checks
+multi cleanup feature/old --force   # Override safety checks
+multi cleanup-all                   # Clean all environments safely
+```
 
+**Safety features prevent data loss:**
+- Detects uncommitted changes before removal
+- Counts and warns about unpushed commits
+- Shows recent commits that would be lost
+- Requires explicit confirmation or `--force` flag
+
+### 🛠 Smart Project Detection
+
+Auto-detects and suggests commands for:
 - Node.js projects (npm/yarn dev/start)
-- Rust projects (cargo run)
+- Rust projects (cargo run) 
 - Docker projects (docker-compose up)
 - Make-based projects
 
@@ -99,42 +116,49 @@ source ~/.zshrc  # or ~/.bashrc
 
 ## How it works
 
-1. **Git Worktrees**: Creates isolated checkouts in `.dev-worktrees/` directory
-2. **3-Window Tmux Sessions**: Each environment gets a dedicated session optimized for parallel development:
-   - `main` window: Editor launch (claude ., cursor ., code .) - your primary coding interface
-   - `dev` window: Development servers, build processes, and long-running tasks
-   - `git` window: Git operations, status checks, and repository management
-3. **Smart Naming**: Session names use repo + branch for organization
-4. **Automatic Cleanup**: Worktrees are properly managed and cleaned up
+1. **Automated Git Worktrees**: Creates isolated checkouts in organized `.dev-worktrees/` directory
+2. **Smart Configuration Management**: Automatically finds and copies essential files (`.env*`, certificates, keys)
+3. **Intelligent Dependency Installation**: Detects lockfiles and runs appropriate package manager commands
+4. **Structured Workspace Organization**: Consistent naming and directory structure across all environments
+5. **Safety-First Cleanup**: Comprehensive checks for uncommitted changes and unpushed commits before removal
+6. **Optional Tmux Integration**: Each environment gets a dedicated session with organized windows:
+   - `main` window: Editor launch commands ready to use
+   - `dev` window: Development servers and build processes  
+   - `git` window: Git operations and repository management
 
-**Why 3 windows?** This setup maximizes productivity when using Claude Code by allowing you to:
-
-- Keep your AI assistant active in the main window while
-- Running development servers/builds in the dev window and
-- Managing git operations in a separate context
-- Work on multiple features simultaneously without interference
+**The automation eliminates these manual steps every time:**
+- Creating worktree directory with proper naming
+- Copying configuration files individually  
+- Running correct package manager with right flags
+- Setting up development environment structure
+- Remembering safe cleanup procedures
 
 ## Example Workflow
 
 ```bash
-# Start working on a feature
-cd my-project
-multi start feature/user-auth
-
-# Tmux session opens automatically with 3 windows
-# In the main window:
-cursor .  # or claude . or code .
-
-# In the dev window (if detected):
+# Traditional manual setup (5-6 steps every time):
+git worktree add .dev-worktrees/feature-user-auth feature/user-auth
+cd .dev-worktrees/feature-user-auth  
+cp ../../.env* .
+cp ../../*.pem .
+npm install
 npm run dev
 
-# Switch to different branch
+# vs Multi-dev automated setup (1 command):
+cd my-project
+multi start feature/user-auth
+# Done! Worktree created, configs copied, dependencies installed, tmux session ready
+
+# Work in your preferred editor:
+cursor .  # or claude . or code .
+
+# Switch between environments instantly:
 multi switch feature/login-error
 
-# List all your environments
+# See all your environments:
 multi list
 
-# Clean up when done
+# Safe cleanup when done:
 multi cleanup feature/user-auth
 ```
 
@@ -188,20 +212,59 @@ your-project/
 - Clean up with `multi cleanup-all --force`
 - Check for uncommitted changes in worktrees
 
-## Why these tools?
+## Why Multi-Dev vs Manual Git Worktrees?
 
-**Traditional workflow problems:**
+### Manual Git Worktree Setup
+```bash
+# Every single time for each new branch:
+git worktree add .dev-worktrees/feature-auth feature/auth
+cd .dev-worktrees/feature-auth
+# Find and copy config files manually:
+cp ../../.env* .
+cp ../../*.pem .  
+cp ../../*.key .
+# Figure out package manager and run install:
+npm install  # or yarn install? npm ci?
+# Set up development workspace manually
+# Remember paths for later switching
+```
 
-- Waiting for Claude Code tasks while context switching kills productivity
-- Git branch switching requires stashing changes and stopping dev servers
-- Single-threaded development when you could be working on multiple features
-- Lost context when switching between different parts of a project
+**Time-consuming manual process:**
+- 5-6 separate commands every time
+- Manual file hunting and copying
+- Guessing correct package manager commands
+- No organized structure or naming consistency
+- No safety checks during cleanup
+- Easy to forget steps or make mistakes
 
-**Solution: Parallel development environments**
-These tools solve this by giving each branch its own complete workspace with dedicated tmux sessions. Perfect for Claude Code users who want to:
+### Multi-Dev Automated Solution
+```bash
+# One command does everything:
+multi start feature/auth
+# Automatically: creates worktree, copies configs, installs deps, sets up workspace
+```
 
-- Start a build/test in one environment while coding in another
-- Work on multiple features simultaneously with separate AI assistant instances
-- Switch instantly between different features without losing context
-- Maintain separate development servers for different branches
-- Keep git operations isolated per feature branch
+**Key automation benefits:**
+- **Time savings** - 2-3 minutes saved per branch setup
+- **Consistency** - Same organized structure every time  
+- **Smart config management** - Automatically finds and copies `.env*`, certificates, keys
+- **Intelligent dependencies** - Detects yarn.lock vs package-lock.json, runs appropriate commands
+- **Safety features** - Comprehensive data loss prevention during cleanup
+- **Easy management** - Simple commands for switching, listing, and cleanup
+- **Optional workflow enhancement** - Tmux integration for persistent sessions
+
+### The Real Benefits
+
+**For everyone:**
+- Eliminates repetitive manual setup steps
+- Prevents configuration mistakes and missing files
+- Provides safe cleanup with uncommitted change detection
+- Creates organized, consistent workspace structure
+
+**Bonus workflow features:**
+- Tmux sessions for persistent development environments
+- Interactive environment switching
+- Visual status indicators
+- Parallel development support
+
+Whether you use tmux or prefer your own terminal setup, the automation and safety features save time and prevent mistakes on every branch.
